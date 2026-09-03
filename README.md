@@ -3,6 +3,26 @@
 
 > Proyek ini membangun sistem rekomendasi merchant dua tahap: candidate generation (mempersempit ribuan merchant jadi 100 kandidat relevan per user) lalu ranking (mengurutkan 100 kandidat itu berdasarkan kemungkinan user benar-benar bertransaksi). Tahap 1 pakai ALS dari histori rating user-merchant, tahap 2 pakai LightGBM Ranker yang menggabungkan skor ALS dengan sinyal lain seperti popularitas, rating, dan kedekatan kategori. Semua angka di README ini dihitung di validation set yang di-split di level user (0% overlap dengan data training), jadi merepresentasikan performa model pada user yang belum pernah dilihat saat training. Hasil utama: model menaruh minimal 1 merchant relevan di Top-5 untuk **83,2% user** (vs 6,2% dengan urutan popularitas semata), setara peningkatan **~3.470% di Recall@5**.
 
+## Daftar Isi
+
+1. [Latar Belakang & Business Questions](#1-latar-belakang--business-questions)
+2. [Sumber Data](#2-sumber-data)
+3. [Metodologi](#3-metodologi)
+4. [Tech Stack](#4-tech-stack)
+5. [Cara Kerja Tiap Algoritma](#5-cara-kerja-tiap-algoritma)
+6. [Cara Mengukur Hasilnya](#6-cara-mengukur-hasilnya)
+7. [Hasil & Insight Kunci](#7-hasil--insight-kunci)
+   - [7.1 BQ1: Merchant paling relevan per user](#71-bq1--merchant-paling-relevan-per-user)
+   - [7.2 BQ2: Pengaruh urutan terhadap kemungkinan transaksi](#72-bq2--pengaruh-urutan-terhadap-kemungkinan-transaksi)
+   - [7.3 BQ3: Fitur paling berpengaruh](#73-bq3--fitur-paling-berpengaruh)
+   - [7.4 BQ4: Peningkatan relevansi vs baseline](#74-bq4--peningkatan-relevansi-vs-baseline)
+8. [Rekomendasi](#8-rekomendasi)
+9. [Batasan & Keterbatasan Proyek](#9-batasan--keterbatasan-proyek)
+10. [Cara Menjalankan](#10-cara-menjalankan)
+11. [Struktur Proyek](#11-struktur-proyek)
+12. [Pengembangan Lanjutan](#12-pengembangan-lanjutan)
+13. [Referensi](#13-referensi)
+
 ## 1. Latar Belakang & Business Questions
 
 Sistem rekomendasi skala industri jarang mengandalkan satu model tunggal. Pola yang umum dipakai adalah pipeline dua tahap:
@@ -10,7 +30,7 @@ Sistem rekomendasi skala industri jarang mengandalkan satu model tunggal. Pola y
 1. **Candidate generation** : mempersempit jutaan merchant jadi puluhan/ratusan kandidat yang relevan bagi seorang user.
 2. **Ranking** : mengurutkan kandidat itu berdasarkan kemungkinan user benar-benar bertransaksi.
 
-Proyek ini membangun kedua tahap tersebut memakai data transaksi marketplace nyata (Yelp Dataset), lalu diadaptasi ke konteks rekomendasi merchant pada aplikasi pembayaran.
+Pola dua tahap ini konsisten dengan yang dipakai platform skala besar seperti Netflix, Pinterest, dan Amazon, dan sudah mulai dikaji sifat teoretisnya dari sisi konvergensi terhadap sistem rekomendasi optimal (Jaiswal, 2024). Proyek ini membangun kedua tahap tersebut memakai data transaksi marketplace nyata (Yelp Dataset), lalu diadaptasi ke konteks rekomendasi merchant pada aplikasi pembayaran.
 
 Empat pertanyaan yang dijawab:
 
@@ -23,7 +43,7 @@ Empat pertanyaan yang dijawab:
 
 ## 2. Sumber Data
 
-Sumber: Yelp Academic Dataset (`yelp_academic_dataset_business.json`, `yelp_academic_dataset_review.json`). File review berukuran besar (>5GB), jadi data dibaca per-chunk (streaming) dan langsung difilter agar hemat memori.
+Sumber: [Yelp Open Dataset](https://www.yelp.com/dataset/download) (`yelp_academic_dataset_business.json`, `yelp_academic_dataset_review.json`). File review berukuran besar (>5GB), jadi data dibaca per-chunk (streaming) dan langsung difilter agar hemat memori.
 
 Langkah persiapan data:
 
@@ -47,7 +67,7 @@ Langkah persiapan data:
 
 **Tahap 1 : Candidate Generation (ALS).** Matriks interaksi user × merchant (rating) dibangun dari `train_df`, dilatih dengan `implicit.AlternatingLeastSquares` (factors=50, iterations=20). Tiap user mendapat 100 kandidat teratas dari ALS.
 
-**Tahap 2 : Ranking (LightGBM LambdaRank).** Kandidat dari ALS digabung dengan item populer dan sampel random sebagai negatif, lalu diberi 9 fitur:
+**Tahap 2 : Ranking (LightGBM LambdaRank).** Kandidat dari ALS digabung dengan item populer dan sampel random sebagai negatif, lalu diberi 9 fitur. Pemilihan GBDT (LightGBM) sebagai ranker di tahap ini konsisten dengan temuan bahwa model berbasis pohon (GBDT/Random Forest) tetap unggul dibanding deep learning pada data tabular berukuran menengah seperti data ranking di proyek ini (Grinsztajn et al., 2022):
 
 | Fitur | Deskripsi |
 |---|---|
@@ -83,7 +103,7 @@ als_score(u, i) = P_u · Q_i
 
 ALS melatih `P` dan `Q` dengan bergantian: bekukan `Q`, cari `P` terbaik lewat least squares, lalu bekukan `P`, cari `Q` terbaik : diulang 20 kali (`iterations=20`) sampai error mengecil. Ini yang menghasilkan 100 kandidat kasar per user di tahap 1.
 
-**LightGBM LambdaRank.** Beda dari model klasifikasi biasa yang menilai tiap merchant sendiri-sendiri, LambdaRank belajar dari **pasangan** merchant per user: kalau merchant A benar-benar ditransaksikan user dan merchant B tidak, model dihukum kalau menaruh skor B lebih tinggi dari A. Bobot hukumannya dibuat lebih besar untuk kesalahan di posisi atas ranking (dekat rank 1) dibanding di posisi bawah, karena posisi atas yang paling menentukan NDCG. Efeknya, model dioptimalkan langsung untuk urutan, bukan cuma skor per merchant.
+**LightGBM LambdaRank.** Beda dari model klasifikasi biasa yang menilai tiap merchant sendiri-sendiri, LambdaRank belajar dari **pasangan** merchant per user: kalau merchant A benar-benar ditransaksikan user dan merchant B tidak, model dihukum kalau menaruh skor B lebih tinggi dari A. Bobot hukumannya dibuat lebih besar untuk kesalahan di posisi atas ranking (dekat rank 1) dibanding di posisi bawah, karena posisi atas yang paling menentukan NDCG. Efeknya, model dioptimalkan langsung untuk urutan, bukan cuma skor per merchant. Perbandingan terkini atas LambdaMART dan varian GBDT ranking lain menunjukkan pembobotan berbasis posisi seperti ini tetap jadi bagian penting dari performa metode-metode GBDT ranking terbaik saat ini (Lyzhin et al., 2022).
 
 ## 6. Cara Mengukur Hasilnya
 
@@ -177,7 +197,7 @@ ALS Score Baseline (skor mentah ALS tanpa ranker) juga jauh di bawah model penuh
 pip install pandas numpy scipy scikit-learn implicit lightgbm tqdm matplotlib seaborn --break-system-packages
 ```
 
-1. Letakkan file dataset Yelp di folder `./data/`.
+1. Unduh dataset dari [Yelp Open Dataset](https://www.yelp.com/dataset/download) dan letakkan di folder `./data/`.
 2. Buka `rekomendasi_merchant.ipynb`.
 3. Jalankan seluruh cell dari atas ke bawah (Run All). Waktu proses candidate generation + feature building bisa memakan >1 jam tergantung spesifikasi mesin : pantau progress bar `tqdm` di tiap tahap.
 
@@ -193,3 +213,11 @@ data/                        -> file dataset Yelp (tidak disertakan di repo)
 
 1. Cross-check hasil dengan cutoff waktu berbeda (sensitivity check terhadap `TRAIN_CUTOFF`).
 2. Tambahkan analisis segmentasi user (aktif vs jarang bertransaksi), untuk melihat apakah keunggulan model konsisten di semua segmen : terutama karena temuan BQ3 mengindikasikan model mungkin kurang optimal untuk user dengan histori tipis.
+
+## 13. Referensi
+
+Jaiswal, A. K. (2024). *Towards a theoretical understanding of two-stage recommender systems* (arXiv:2403.00802). arXiv. https://arxiv.org/abs/2403.00802
+
+Grinsztajn, L., Oyallon, E., & Varoquaux, G. (2022). Why do tree-based models still outperform deep learning on typical tabular data? In *Advances in Neural Information Processing Systems* (Vol. 35, pp. 507–520). Curran Associates, Inc. https://proceedings.neurips.cc/paper_files/paper/2022/hash/0378c7692da36807bdec87ab043cdadc-Abstract-Datasets_and_Benchmarks.html
+
+Lyzhin, I., Ustimenko, A., Gulin, A., & Prokhorenkova, L. (2022). *Which tricks are important for learning to rank?* (arXiv:2204.01500). arXiv. https://doi.org/10.48550/arXiv.2204.01500
