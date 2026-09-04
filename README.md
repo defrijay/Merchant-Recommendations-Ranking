@@ -1,6 +1,8 @@
 # Rekomendasi & Perankingan Merchant
 ### Recommender System + Learning to Rank
 
+![Cover](assets/cover.jpg)
+
 > Proyek ini membangun sistem rekomendasi merchant dua tahap: candidate generation (mempersempit ribuan merchant jadi 100 kandidat relevan per user) lalu ranking (mengurutkan 100 kandidat itu berdasarkan kemungkinan user benar-benar bertransaksi). Tahap 1 pakai ALS dari histori rating user-merchant, tahap 2 pakai LightGBM Ranker yang menggabungkan skor ALS dengan sinyal lain seperti popularitas, rating, dan kedekatan kategori. Semua angka di README ini dihitung di validation set yang di-split di level user (0% overlap dengan data training), jadi merepresentasikan performa model pada user yang belum pernah dilihat saat training. Hasil utama: model menaruh minimal 1 merchant relevan di Top-5 untuk **83,2% user** (vs 6,2% dengan urutan popularitas semata), setara peningkatan **~3.470% di Recall@5**.
 
 ## Daftar Isi
