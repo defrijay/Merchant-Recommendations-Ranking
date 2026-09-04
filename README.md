@@ -65,6 +65,8 @@ Langkah persiapan data:
 
 ## 3. Metodologi
 
+**Dalam bahasa sederhana:** proyek ini bekerja dua tahap, mirip proses rekrutmen karyawan. Tahap pertama menyaring ribuan merchant jadi 100 kandidat yang kira-kira cocok buat tiap user seperti menyaring ribuan lamaran kerja jadi 100 kandidat yang layak dipanggil wawancara. Tahap kedua mengurutkan 100 kandidat itu dari yang paling mungkin sampai yang paling kecil kemungkinannya untuk benar-benar ditransaksikan user seperti wawancara final yang menentukan urutan siapa yang paling layak diterima duluan.
+
 **Tahap 1 : Candidate Generation (ALS).** Matriks interaksi user × merchant (rating) dibangun dari `train_df`, dilatih dengan `implicit.AlternatingLeastSquares` (factors=50, iterations=20). Tiap user mendapat 100 kandidat teratas dari ALS.
 
 **Tahap 2 : Ranking (LightGBM LambdaRank).** Kandidat dari ALS digabung dengan item populer dan sampel random sebagai negatif, lalu diberi 9 fitur. Pemilihan GBDT (LightGBM) sebagai ranker di tahap ini konsisten dengan temuan bahwa model berbasis pohon (GBDT/Random Forest) tetap unggul dibanding deep learning pada data tabular berukuran menengah seperti data ranking di proyek ini (Grinsztajn et al., 2022):
@@ -81,7 +83,11 @@ Langkah persiapan data:
 | `als_score` | Skor dot-product dari model ALS |
 | `in_als_topk` | Apakah merchant masuk top-100 rekomendasi ALS |
 
+**Dalam bahasa sederhana, 9 fitur di atas itu jawaban atas pertanyaan:** "seberapa populer merchant ini", "seberapa bagus ratingnya", "seberapa mirip kategorinya dengan yang biasa dibeli user ini", dan "seberapa dekat merchant ini dengan preferensi tersembunyi user menurut Tahap 1". Model belajar bobot tiap faktor ini dari data histori, bukan diatur manual.
+
 **Validasi.** `df_rank` displit di level user (bukan baris) 80/20 menjadi `df_rank_train` (18.476 user, 3.816.943 baris) dan `df_rank_val` (4.620 user, 955.003 baris), dengan 0 user overlap antara keduanya. Model dilatih dengan `objective='lambdarank'`, early stopping berdasarkan `ndcg@10` di validation set. Seluruh metrik BQ1–BQ4 dihitung di `df_rank_val` : data yang sama sekali tidak dilihat model saat training.
+
+**Kenapa ini penting buat bisnis:** model diuji ke 4.620 user yang sama sekali belum pernah "dilihat" model saat belajar supaya angka performa yang dilaporkan mencerminkan kondisi nyata di user baru, bukan cuma menghafal user yang sudah dikenal.
 
 ## 4. Tech Stack
 
@@ -89,7 +95,11 @@ Python · Pandas · implicit (ALS) · LightGBM Ranker · scikit-learn
 
 ## 5. Cara Kerja Tiap Algoritma
 
-**ALS (Alternating Least Squares).** Tugasnya: dari matriks rating user × merchant yang sangat jarang terisi (sparse), cari pola tersembunyi yang menjelaskan kenapa user menyukai merchant tertentu. Caranya, matriks rating asli `R` didekomposisi jadi dua matriks lebih kecil:
+**ALS (Alternating Least Squares).** Tugasnya: dari matriks rating user × merchant yang sangat jarang terisi (sparse), cari pola tersembunyi yang menjelaskan kenapa user menyukai merchant tertentu.
+
+**Dalam bahasa sederhana:** bayangkan tiap user dan tiap merchant punya "sidik jari selera" 50 angka rahasia yang menangkap kenapa user A cenderung suka ke merchant X. Model belajar sidik jari ini dari histori transaksi, lalu mencocokkan sidik jari user dengan sidik jari merchant untuk menebak siapa yang paling klop. Bagi pembaca yang mau lihat detail matematisnya:
+
+Caranya, matriks rating asli `R` didekomposisi jadi dua matriks lebih kecil:
 
 ```
 R ≈ P × Qᵀ
@@ -103,7 +113,9 @@ als_score(u, i) = P_u · Q_i
 
 ALS melatih `P` dan `Q` dengan bergantian: bekukan `Q`, cari `P` terbaik lewat least squares, lalu bekukan `P`, cari `Q` terbaik : diulang 20 kali (`iterations=20`) sampai error mengecil. Ini yang menghasilkan 100 kandidat kasar per user di tahap 1.
 
-**LightGBM LambdaRank.** Beda dari model klasifikasi biasa yang menilai tiap merchant sendiri-sendiri, LambdaRank belajar dari **pasangan** merchant per user: kalau merchant A benar-benar ditransaksikan user dan merchant B tidak, model dihukum kalau menaruh skor B lebih tinggi dari A. Bobot hukumannya dibuat lebih besar untuk kesalahan di posisi atas ranking (dekat rank 1) dibanding di posisi bawah, karena posisi atas yang paling menentukan NDCG. Efeknya, model dioptimalkan langsung untuk urutan, bukan cuma skor per merchant. Perbandingan terkini atas LambdaMART dan varian GBDT ranking lain menunjukkan pembobotan berbasis posisi seperti ini tetap jadi bagian penting dari performa metode-metode GBDT ranking terbaik saat ini (Lyzhin et al., 2022).
+**LightGBM LambdaRank.** Beda dari model klasifikasi biasa yang menilai tiap merchant sendiri-sendiri, belajar dari **pasangan** merchant per user: kalau merchant A benar-benar ditransaksikan user dan merchant B tidak, model dihukum kalau menaruh skor B lebih tinggi dari A.
+
+**Dalam bahasa sederhana:** model ini tidak cuma dilatih untuk menebak "merchant ini bakal ditransaksikan atau tidak" satu-satu, tapi dilatih langsung untuk menebak urutan yang benar seperti melatih juri lomba untuk menyusun ranking peserta dari terbaik ke terburuk, bukan sekadar menilai satu peserta lulus atau tidak lulus. Bobot hukumannya dibuat lebih besar untuk kesalahan di posisi atas ranking (dekat rank 1) dibanding di posisi bawah, karena posisi atas yang paling menentukan pengalaman user (merchant yang muncul di 5 teratas jauh lebih sering dilihat daripada yang di urutan ke-50). Efeknya, model dioptimalkan langsung untuk urutan, bukan cuma skor per merchant. Perbandingan terkini atas LambdaMART dan varian GBDT ranking lain menunjukkan pembobotan berbasis posisi seperti ini tetap jadi bagian penting dari performa metode-metode GBDT ranking terbaik saat ini (Lyzhin et al., 2022).
 
 ## 6. Cara Mengukur Hasilnya
 
@@ -115,17 +127,23 @@ Empat metrik ini dihitung untuk tiap user di validation set, lalu dirata-ratakan
 Recall@K = (merchant relevan di top-K) / (total merchant relevan user itu)
 ```
 
+*Artinya:* kalau user itu sebenarnya pernah bertransaksi di 4 merchant berbeda, dan 2 dari 4 itu muncul di 5 rekomendasi teratas, Recall@5 untuk user itu = 50%.
+
 **Precision@K** : dari K rekomendasi yang ditampilkan, berapa persen yang benar-benar relevan.
 
 ```
 Precision@K = (merchant relevan di top-K) / K
 ```
 
+*Artinya:* dari 5 merchant yang ditampilkan ke user, berapa banyak yang memang "kena sasaran". Ini ukuran seberapa tidak sia-sia tiap slot rekomendasi yang ditampilkan.
+
 **Hit Rate@K** : apakah minimal ada satu merchant relevan di top-K (1 kalau ada, 0 kalau tidak), dirata-rata lintas user.
 
 ```
 Hit Rate@K = 1 jika (merchant relevan di top-K) > 0, selain itu 0
 ```
+
+*Artinya:* metrik paling sederhana "apakah user ini melihat setidaknya satu rekomendasi yang cocok buat dia, ya atau tidak". Ini metrik yang paling gampang dijelaskan ke stakeholder non-teknis: 83,2% artinya 8 dari 10 user melihat minimal satu rekomendasi yang relevan di 5 teratas.
 
 **NDCG@K (Normalized Discounted Cumulative Gain)** : mengukur relevansi sekaligus posisinya: merchant relevan yang muncul di rank 1 dihargai lebih tinggi daripada yang muncul di rank 10.
 
@@ -134,7 +152,7 @@ DCG@K  = Σ (relevansi_i / log2(i + 2))     untuk i = 0 ... K-1
 NDCG@K = DCG@K / IDCG@K
 ```
 
-`relevansi_i` bernilai 1 kalau merchant di posisi `i` benar-benar ditransaksikan user, 0 kalau tidak. `IDCG@K` adalah DCG dari urutan ideal (semua merchant relevan ditaruh di posisi paling atas) : jadi NDCG selalu berada di rentang 0–1, dengan 1 berarti urutan model sudah sama persis dengan urutan ideal.
+*Artinya, dalam bahasa sederhana:* Recall dan Precision cuma menghitung "berapa banyak yang kena", tapi tidak peduli posisinya. NDCG peduli posisi rekomendasi yang tepat tapi nangkring di urutan pertama dihargai jauh lebih tinggi daripada yang tepat tapi terselip di urutan ke-10, karena user jarang scroll sampai bawah. `relevansi_i` bernilai 1 kalau merchant di posisi `i` benar-benar ditransaksikan user, 0 kalau tidak. `IDCG@K` adalah skor dari urutan ideal (semua merchant relevan ditaruh di posisi paling atas) jadi NDCG selalu berada di rentang 0–1, dengan 1 berarti urutan model sudah sama persis dengan urutan yang paling ideal.
 
 ## 7. Hasil & Insight Kunci
 
