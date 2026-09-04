@@ -1,240 +1,240 @@
-# Rekomendasi & Perankingan Merchant
+# Merchant Recommendation & Ranking
 ### Recommender System + Learning to Rank
 
 ![Cover](assets/cover.jpg)
 
-> Proyek ini membangun sistem rekomendasi merchant dua tahap: candidate generation (mempersempit ribuan merchant jadi 100 kandidat relevan per user) lalu ranking (mengurutkan 100 kandidat itu berdasarkan kemungkinan user benar-benar bertransaksi). Tahap 1 pakai ALS dari histori rating user-merchant, tahap 2 pakai LightGBM Ranker yang menggabungkan skor ALS dengan sinyal lain seperti popularitas, rating, dan kedekatan kategori. Semua angka di README ini dihitung di validation set yang di-split di level user (0% overlap dengan data training), jadi merepresentasikan performa model pada user yang belum pernah dilihat saat training. Hasil utama: model menaruh minimal 1 merchant relevan di Top-5 untuk **83,2% user** (vs 6,2% dengan urutan popularitas semata), setara peningkatan **~3.470% di Recall@5**.
+> This project builds a two-stage merchant recommendation system: candidate generation (narrowing thousands of merchants down to 100 relevant candidates per user) followed by ranking (ordering those 100 candidates by how likely the user is to actually transact with them). Stage 1 uses ALS on user-merchant rating history, stage 2 uses a LightGBM Ranker that combines the ALS score with other signals like popularity, rating, and category closeness. Every number in this README comes from a validation set split at the user level (0% overlap with training data), so it represents model performance on users the model has never seen during training. Headline result: the model places at least 1 relevant merchant in the Top 5 for **83.2% of users** (vs. 6.2% using popularity ranking alone), equivalent to a **~3,470% lift in Recall@5**.
 
-## Daftar Isi
+## Table of Contents
 
-1. [Latar Belakang & Business Questions](#1-latar-belakang--business-questions)
-2. [Sumber Data](#2-sumber-data)
-3. [Metodologi](#3-metodologi)
+1. [Background & Business Questions](#1-background--business-questions)
+2. [Data Source](#2-data-source)
+3. [Methodology](#3-methodology)
 4. [Tech Stack](#4-tech-stack)
-5. [Cara Kerja Tiap Algoritma](#5-cara-kerja-tiap-algoritma)
-6. [Cara Mengukur Hasilnya](#6-cara-mengukur-hasilnya)
-7. [Hasil & Insight Kunci](#7-hasil--insight-kunci)
-   - [7.1 BQ1: Merchant paling relevan per user](#71-bq1--merchant-paling-relevan-per-user)
-   - [7.2 BQ2: Pengaruh urutan terhadap kemungkinan transaksi](#72-bq2--pengaruh-urutan-terhadap-kemungkinan-transaksi)
-   - [7.3 BQ3: Fitur paling berpengaruh](#73-bq3--fitur-paling-berpengaruh)
-   - [7.4 BQ4: Peningkatan relevansi vs baseline](#74-bq4--peningkatan-relevansi-vs-baseline)
-8. [Rekomendasi](#8-rekomendasi)
-9. [Batasan & Keterbatasan Proyek](#9-batasan--keterbatasan-proyek)
-10. [Cara Menjalankan](#10-cara-menjalankan)
-11. [Struktur Proyek](#11-struktur-proyek)
-12. [Pengembangan Lanjutan](#12-pengembangan-lanjutan)
-13. [Referensi](#13-referensi)
+5. [How Each Algorithm Works](#5-how-each-algorithm-works)
+6. [How Results Are Measured](#6-how-results-are-measured)
+7. [Results & Key Insights](#7-results--key-insights)
+   - [7.1 BQ1: Most relevant merchant per user](#71-bq1--most-relevant-merchant-per-user)
+   - [7.2 BQ2: Effect of ranking on transaction likelihood](#72-bq2--effect-of-ranking-on-transaction-likelihood)
+   - [7.3 BQ3: Most influential features](#73-bq3--most-influential-features)
+   - [7.4 BQ4: Relevance lift vs. baseline](#74-bq4--relevance-lift-vs-baseline)
+8. [Recommendations](#8-recommendations)
+9. [Limitations & Constraints](#9-limitations--constraints)
+10. [How to Run](#10-how-to-run)
+11. [Project Structure](#11-project-structure)
+12. [Future Work](#12-future-work)
+13. [References](#13-references)
 
-## 1. Latar Belakang & Business Questions
+## 1. Background & Business Questions
 
-Sistem rekomendasi skala industri jarang mengandalkan satu model tunggal. Pola yang umum dipakai adalah pipeline dua tahap:
+Industrial-scale recommendation systems rarely rely on a single model. The common pattern is a two-stage pipeline:
 
-1. **Candidate generation** : mempersempit jutaan merchant jadi puluhan/ratusan kandidat yang relevan bagi seorang user.
-2. **Ranking** : mengurutkan kandidat itu berdasarkan kemungkinan user benar-benar bertransaksi.
+1. **Candidate generation**: narrow millions of merchants down to tens or hundreds of candidates relevant to a given user.
+2. **Ranking**: order those candidates by how likely the user is to actually transact.
 
-Pola dua tahap ini konsisten dengan yang dipakai platform skala besar seperti Netflix, Pinterest, dan Amazon, dan sudah mulai dikaji sifat teoretisnya dari sisi konvergensi terhadap sistem rekomendasi optimal (Jaiswal, 2024). Proyek ini membangun kedua tahap tersebut memakai data transaksi marketplace nyata (Yelp Dataset), lalu diadaptasi ke konteks rekomendasi merchant pada aplikasi pembayaran.
+This two-stage pattern matches what large platforms like Netflix, Pinterest, and Amazon use, and its theoretical properties, including convergence toward an optimal recommender system, are now being studied formally (Jaiswal, 2024). This project builds both stages using real marketplace transaction data (the Yelp Dataset), then adapts the approach to a merchant-recommendation context for a payment app.
 
-Empat pertanyaan yang dijawab:
+Four questions this project answers:
 
-| # | Pertanyaan |
+| # | Question |
 |---|---|
-| BQ1 | Merchant apa yang paling relevan untuk direkomendasikan ke tiap user berdasarkan histori transaksinya? |
-| BQ2 | Bagaimana urutan hasil rekomendasi memengaruhi kemungkinan user benar-benar bertransaksi, dibanding urutan berbasis popularitas semata? |
-| BQ3 | Fitur apa (rating merchant, kedekatan kategori, recency transaksi, dll) yang paling berpengaruh terhadap ranking? |
-| BQ4 | Seberapa besar peningkatan relevansi model dibanding baseline sederhana? |
+| BQ1 | Which merchants are most relevant to recommend to each user, based on their transaction history? |
+| BQ2 | How does the ranking of recommendations affect the likelihood a user actually transacts, compared to ranking by popularity alone? |
+| BQ3 | Which features (merchant rating, category closeness, transaction recency, etc.) most influence the ranking? |
+| BQ4 | How much does the model improve relevance over a simple baseline? |
 
-## 2. Sumber Data
+## 2. Data Source
 
-Sumber: [Yelp Open Dataset](https://www.yelp.com/dataset/download) (`yelp_academic_dataset_business.json`, `yelp_academic_dataset_review.json`). File review berukuran besar (>5GB), jadi data dibaca per-chunk (streaming) dan langsung difilter agar hemat memori.
+Source: [Yelp Open Dataset](https://www.yelp.com/dataset/download) (`yelp_academic_dataset_business.json`, `yelp_academic_dataset_review.json`). The review file is large (>5GB), so data is read in chunks (streaming) and filtered immediately to save memory.
 
-Langkah persiapan data:
+Data preparation steps:
 
-1. Kota difilter otomatis berdasarkan 2 kota dengan jumlah bisnis terbanyak di dataset: Philadelphia dan Tucson.
-2. Merchant dengan `review_count < 10` dibuang.
-3. User dengan jumlah review `< 5` dibuang, untuk menghindari cold-start ekstrem.
-4. Data displit berdasarkan waktu: transaksi sebelum 2018-01-01 untuk training, sesudahnya untuk test.
+1. Cities are auto-filtered to the 2 cities with the most businesses in the dataset: Philadelphia and Tucson.
+2. Merchants with `review_count < 10` are dropped.
+3. Users with fewer than 5 reviews are dropped, to avoid extreme cold-start cases.
+4. Data is split by time: transactions before 2018-01-01 for training, everything after for test.
 
-| Tahap | Jumlah |
+| Stage | Count |
 |---|---|
-| Total bisnis (raw) | 150.346 |
-| Bisnis terpakai (2 kota, review_count ≥ 10) | 16.642 |
-| Total baris review discan | 6.990.280 |
-| Review terpakai setelah filter | 820.107 |
-| Rentang tanggal review | 2005-03-02 s.d. 2022-01-19 |
-| User train+test (setelah filter aktivitas) | 23.096 |
-| Item unik | 16.461 |
-| Baris data ranking (positive + negative sampling) | 4.771.946 |
+| Total businesses (raw) | 150,346 |
+| Businesses used (2 cities, review_count ≥ 10) | 16,642 |
+| Total review rows scanned | 6,990,280 |
+| Reviews used after filtering | 820,107 |
+| Review date range | 2005-03-02 to 2022-01-19 |
+| Train+test users (after activity filter) | 23,096 |
+| Unique items | 16,461 |
+| Ranking data rows (positive + negative sampling) | 4,771,946 |
 
-## 3. Metodologi
+## 3. Methodology
 
-**Dalam bahasa sederhana:** proyek ini bekerja dua tahap, mirip proses rekrutmen karyawan. Tahap pertama menyaring ribuan merchant jadi 100 kandidat yang kira-kira cocok buat tiap user seperti menyaring ribuan lamaran kerja jadi 100 kandidat yang layak dipanggil wawancara. Tahap kedua mengurutkan 100 kandidat itu dari yang paling mungkin sampai yang paling kecil kemungkinannya untuk benar-benar ditransaksikan user seperti wawancara final yang menentukan urutan siapa yang paling layak diterima duluan.
+**In plain terms:** this project works in two stages, similar to a hiring process. The first stage narrows thousands of merchants down to 100 candidates that roughly fit each user, like narrowing thousands of job applications down to 100 candidates worth calling in for an interview. The second stage ranks those 100 candidates from most to least likely to actually be transacted with by the user, like a final interview round that decides the order in which candidates deserve an offer.
 
-**Tahap 1 : Candidate Generation (ALS).** Matriks interaksi user × merchant (rating) dibangun dari `train_df`, dilatih dengan `implicit.AlternatingLeastSquares` (factors=50, iterations=20). Tiap user mendapat 100 kandidat teratas dari ALS.
+**Stage 1: Candidate Generation (ALS).** A user × merchant interaction matrix (rating) is built from `train_df`, trained with `implicit.AlternatingLeastSquares` (factors=50, iterations=20). Each user gets the top 100 candidates from ALS.
 
-**Tahap 2 : Ranking (LightGBM LambdaRank).** Kandidat dari ALS digabung dengan item populer dan sampel random sebagai negatif, lalu diberi 9 fitur. Pemilihan GBDT (LightGBM) sebagai ranker di tahap ini konsisten dengan temuan bahwa model berbasis pohon (GBDT/Random Forest) tetap unggul dibanding deep learning pada data tabular berukuran menengah seperti data ranking di proyek ini (Grinsztajn et al., 2022):
+**Stage 2: Ranking (LightGBM LambdaRank).** Candidates from ALS are combined with popular items and random samples as negatives, then given 9 features. Choosing a GBDT model (LightGBM) as the ranker here is consistent with findings that tree-based models (GBDT/Random Forest) still outperform deep learning on medium-sized tabular data, which matches the ranking data in this project (Grinsztajn et al., 2022):
 
-| Fitur | Deskripsi |
+| Feature | Description |
 |---|---|
-| `item_popularity` | Jumlah review merchant |
-| `item_avg_rating` | Rating rata-rata merchant |
-| `user_avg_rating` | Rating rata-rata yang diberikan user |
-| `user_review_count` | Jumlah review yang pernah dibuat user |
-| `inter_rating` | Rating user ke merchant tsb, kalau pernah berinteraksi |
-| `inter_recency` | Jarak hari sejak interaksi terakhir |
-| `cat_similarity` | Kemiripan kategori (cosine similarity TF-IDF) antara histori user dan merchant |
-| `als_score` | Skor dot-product dari model ALS |
-| `in_als_topk` | Apakah merchant masuk top-100 rekomendasi ALS |
+| `item_popularity` | Number of merchant reviews |
+| `item_avg_rating` | Merchant's average rating |
+| `user_avg_rating` | User's average given rating |
+| `user_review_count` | Number of reviews the user has written |
+| `inter_rating` | User's rating for that merchant, if they've interacted before |
+| `inter_recency` | Days since the last interaction |
+| `cat_similarity` | Category similarity (TF-IDF cosine similarity) between the user's history and the merchant |
+| `als_score` | Dot-product score from the ALS model |
+| `in_als_topk` | Whether the merchant is in ALS's top-100 recommendations |
 
-**Dalam bahasa sederhana, 9 fitur di atas itu jawaban atas pertanyaan:** "seberapa populer merchant ini", "seberapa bagus ratingnya", "seberapa mirip kategorinya dengan yang biasa dibeli user ini", dan "seberapa dekat merchant ini dengan preferensi tersembunyi user menurut Tahap 1". Model belajar bobot tiap faktor ini dari data histori, bukan diatur manual.
+**In plain terms, these 9 features answer:** "how popular is this merchant", "how good is its rating", "how similar is its category to what this user usually buys", and "how close is this merchant to the user's hidden preferences according to Stage 1". The model learns the weight of each factor from historical data, rather than having them set manually.
 
-**Validasi.** `df_rank` displit di level user (bukan baris) 80/20 menjadi `df_rank_train` (18.476 user, 3.816.943 baris) dan `df_rank_val` (4.620 user, 955.003 baris), dengan 0 user overlap antara keduanya. Model dilatih dengan `objective='lambdarank'`, early stopping berdasarkan `ndcg@10` di validation set. Seluruh metrik BQ1–BQ4 dihitung di `df_rank_val` : data yang sama sekali tidak dilihat model saat training.
+**Validation.** `df_rank` is split at the user level (not the row level), 80/20, into `df_rank_train` (18,476 users, 3,816,943 rows) and `df_rank_val` (4,620 users, 955,003 rows), with 0 user overlap between the two. The model is trained with `objective='lambdarank'`, with early stopping based on `ndcg@10` on the validation set. All BQ1–BQ4 metrics are calculated on `df_rank_val`: data the model never saw during training.
 
-**Kenapa ini penting buat bisnis:** model diuji ke 4.620 user yang sama sekali belum pernah "dilihat" model saat belajar supaya angka performa yang dilaporkan mencerminkan kondisi nyata di user baru, bukan cuma menghafal user yang sudah dikenal.
+**Why this matters for the business:** the model is tested on 4,620 users it never "saw" while learning, so the reported performance numbers reflect real conditions with new users, not just how well the model memorized users it already knows.
 
 ## 4. Tech Stack
 
 Python · Pandas · implicit (ALS) · LightGBM Ranker · scikit-learn
 
-## 5. Cara Kerja Tiap Algoritma
+## 5. How Each Algorithm Works
 
-**ALS (Alternating Least Squares).** Tugasnya: dari matriks rating user × merchant yang sangat jarang terisi (sparse), cari pola tersembunyi yang menjelaskan kenapa user menyukai merchant tertentu.
+**ALS (Alternating Least Squares).** Its job: find the hidden patterns in a very sparsely-filled user × merchant rating matrix that explain why a user likes a particular merchant.
 
-**Dalam bahasa sederhana:** bayangkan tiap user dan tiap merchant punya "sidik jari selera" 50 angka rahasia yang menangkap kenapa user A cenderung suka ke merchant X. Model belajar sidik jari ini dari histori transaksi, lalu mencocokkan sidik jari user dengan sidik jari merchant untuk menebak siapa yang paling klop. Bagi pembaca yang mau lihat detail matematisnya:
+**In plain terms:** imagine every user and every merchant has a "taste fingerprint" made of 50 secret numbers that captures why user A tends to like merchant X. The model learns this fingerprint from transaction history, then matches user fingerprints against merchant fingerprints to guess who fits best. For readers who want the math:
 
-Caranya, matriks rating asli `R` didekomposisi jadi dua matriks lebih kecil:
+The original rating matrix `R` is decomposed into two smaller matrices:
 
 ```
 R ≈ P × Qᵀ
 ```
 
-`P` (ukuran user × faktor) merepresentasikan preferensi tiap user, `Q` (ukuran merchant × faktor) merepresentasikan karakteristik tiap merchant, keduanya dalam 50 dimensi laten (`factors=50`). Skor prediksi user `u` ke merchant `i` dihitung lewat dot product:
+`P` (sized users × factors) represents each user's preferences, `Q` (sized merchants × factors) represents each merchant's characteristics, both in 50 latent dimensions (`factors=50`). The predicted score for user `u` on merchant `i` is computed as a dot product:
 
 ```
 als_score(u, i) = P_u · Q_i
 ```
 
-ALS melatih `P` dan `Q` dengan bergantian: bekukan `Q`, cari `P` terbaik lewat least squares, lalu bekukan `P`, cari `Q` terbaik : diulang 20 kali (`iterations=20`) sampai error mengecil. Ini yang menghasilkan 100 kandidat kasar per user di tahap 1.
+ALS trains `P` and `Q` by alternating: freeze `Q`, find the best `P` via least squares, then freeze `P`, find the best `Q`, repeated 20 times (`iterations=20`) until the error shrinks. This is what produces the 100 rough candidates per user in Stage 1.
 
-**LightGBM LambdaRank.** Beda dari model klasifikasi biasa yang menilai tiap merchant sendiri-sendiri, belajar dari **pasangan** merchant per user: kalau merchant A benar-benar ditransaksikan user dan merchant B tidak, model dihukum kalau menaruh skor B lebih tinggi dari A.
+**LightGBM LambdaRank.** Unlike a standard classification model that scores each merchant independently, this learns from **pairs** of merchants per user: if merchant A was actually transacted with by the user and merchant B wasn't, the model gets penalized for ranking B above A.
 
-**Dalam bahasa sederhana:** model ini tidak cuma dilatih untuk menebak "merchant ini bakal ditransaksikan atau tidak" satu-satu, tapi dilatih langsung untuk menebak urutan yang benar seperti melatih juri lomba untuk menyusun ranking peserta dari terbaik ke terburuk, bukan sekadar menilai satu peserta lulus atau tidak lulus. Bobot hukumannya dibuat lebih besar untuk kesalahan di posisi atas ranking (dekat rank 1) dibanding di posisi bawah, karena posisi atas yang paling menentukan pengalaman user (merchant yang muncul di 5 teratas jauh lebih sering dilihat daripada yang di urutan ke-50). Efeknya, model dioptimalkan langsung untuk urutan, bukan cuma skor per merchant. Perbandingan terkini atas LambdaMART dan varian GBDT ranking lain menunjukkan pembobotan berbasis posisi seperti ini tetap jadi bagian penting dari performa metode-metode GBDT ranking terbaik saat ini (Lyzhin et al., 2022).
+**In plain terms:** this model isn't trained to guess "will this merchant be transacted with, yes or no" one at a time. It's trained directly to guess the correct order, like training a competition judge to rank contestants from best to worst, not just mark each one pass or fail. The penalty is weighted more heavily for mistakes near the top of the ranking (close to rank 1) than near the bottom, because the top positions shape the user's experience the most (a merchant in the top 5 gets seen far more often than one at rank 50). The effect: the model is optimized directly for ordering, not just for a per-merchant score. Recent comparisons of LambdaMART and other GBDT ranking variants show that position-based weighting like this remains a key part of what makes the best current GBDT ranking methods work (Lyzhin et al., 2022).
 
-## 6. Cara Mengukur Hasilnya
+## 6. How Results Are Measured
 
-Empat metrik ini dihitung untuk tiap user di validation set, lalu dirata-ratakan:
+These four metrics are calculated per user on the validation set, then averaged:
 
-**Recall@K** : dari semua merchant yang benar-benar ditransaksikan user, berapa persen yang masuk ke K rekomendasi teratas.
-
-```
-Recall@K = (merchant relevan di top-K) / (total merchant relevan user itu)
-```
-
-*Artinya:* kalau user itu sebenarnya pernah bertransaksi di 4 merchant berbeda, dan 2 dari 4 itu muncul di 5 rekomendasi teratas, Recall@5 untuk user itu = 50%.
-
-**Precision@K** : dari K rekomendasi yang ditampilkan, berapa persen yang benar-benar relevan.
+**Recall@K**: of all the merchants a user actually transacted with, what percentage made it into the top K recommendations.
 
 ```
-Precision@K = (merchant relevan di top-K) / K
+Recall@K = (relevant merchants in top-K) / (total relevant merchants for that user)
 ```
 
-*Artinya:* dari 5 merchant yang ditampilkan ke user, berapa banyak yang memang "kena sasaran". Ini ukuran seberapa tidak sia-sia tiap slot rekomendasi yang ditampilkan.
+*In other words:* if a user actually transacted with 4 different merchants, and 2 of those 4 show up in the top 5 recommendations, that user's Recall@5 = 50%.
 
-**Hit Rate@K** : apakah minimal ada satu merchant relevan di top-K (1 kalau ada, 0 kalau tidak), dirata-rata lintas user.
-
-```
-Hit Rate@K = 1 jika (merchant relevan di top-K) > 0, selain itu 0
-```
-
-*Artinya:* metrik paling sederhana "apakah user ini melihat setidaknya satu rekomendasi yang cocok buat dia, ya atau tidak". Ini metrik yang paling gampang dijelaskan ke stakeholder non-teknis: 83,2% artinya 8 dari 10 user melihat minimal satu rekomendasi yang relevan di 5 teratas.
-
-**NDCG@K (Normalized Discounted Cumulative Gain)** : mengukur relevansi sekaligus posisinya: merchant relevan yang muncul di rank 1 dihargai lebih tinggi daripada yang muncul di rank 10.
+**Precision@K**: of the K recommendations shown, what percentage are actually relevant.
 
 ```
-DCG@K  = Σ (relevansi_i / log2(i + 2))     untuk i = 0 ... K-1
+Precision@K = (relevant merchants in top-K) / K
+```
+
+*In other words:* out of the 5 merchants shown to a user, how many actually "hit the mark". This measures how much of each recommendation slot goes to waste.
+
+**Hit Rate@K**: whether at least one relevant merchant appears in the top K (1 if yes, 0 if no), averaged across users.
+
+```
+Hit Rate@K = 1 if (relevant merchants in top-K) > 0, otherwise 0
+```
+
+*In other words:* the simplest possible metric, "did this user see at least one recommendation that fit them, yes or no". This is the easiest metric to explain to a non-technical stakeholder: 83.2% means 8 out of 10 users saw at least one relevant recommendation in the top 5.
+
+**NDCG@K (Normalized Discounted Cumulative Gain)**: measures relevance and position together, a relevant merchant appearing at rank 1 is worth more than one appearing at rank 10.
+
+```
+DCG@K  = Σ (relevance_i / log2(i + 2))     for i = 0 ... K-1
 NDCG@K = DCG@K / IDCG@K
 ```
 
-*Artinya, dalam bahasa sederhana:* Recall dan Precision cuma menghitung "berapa banyak yang kena", tapi tidak peduli posisinya. NDCG peduli posisi rekomendasi yang tepat tapi nangkring di urutan pertama dihargai jauh lebih tinggi daripada yang tepat tapi terselip di urutan ke-10, karena user jarang scroll sampai bawah. `relevansi_i` bernilai 1 kalau merchant di posisi `i` benar-benar ditransaksikan user, 0 kalau tidak. `IDCG@K` adalah skor dari urutan ideal (semua merchant relevan ditaruh di posisi paling atas) jadi NDCG selalu berada di rentang 0–1, dengan 1 berarti urutan model sudah sama persis dengan urutan yang paling ideal.
+*In plain terms:* Recall and Precision only count "how many hit", they don't care about position. NDCG cares about position too, a correct recommendation sitting at position 1 is worth far more than a correct one buried at position 10, because users rarely scroll that far. `relevance_i` is 1 if the merchant at position `i` was actually transacted with by the user, 0 if not. `IDCG@K` is the score from the ideal ordering (every relevant merchant placed at the very top), so NDCG always falls between 0 and 1, with 1 meaning the model's ordering matches the ideal ordering exactly.
 
-## 7. Hasil & Insight Kunci
+## 7. Results & Key Insights
 
-### 7.1 BQ1 : Merchant paling relevan per user
+### 7.1 BQ1: Most relevant merchant per user
 
-Di 4.620 user validation set, model berhasil menaruh minimal 1 merchant yang benar-benar ditransaksikan user di Top-5 rekomendasi untuk **83,2% user** (Hit Rate@5), dibanding cuma **6,2% user** kalau memakai urutan popularitas semata.
+Across the 4,620 users in the validation set, the model placed at least 1 merchant the user actually transacted with in the Top 5 recommendations for **83.2% of users** (Hit Rate@5), compared to just **6.2% of users** using popularity ranking alone.
 
-Precision@5 model = **0,3910** (dari 5 rekomendasi teratas, rata-rata 1,95 di antaranya benar-benar relevan) vs Precision@5 popularity = **0,0149**.
+Model Precision@5 = **0.3910** (of the top 5 recommendations, an average of 1.95 are actually relevant) vs. popularity Precision@5 = **0.0149**.
 
-### 7.2 BQ2 : Pengaruh urutan terhadap kemungkinan transaksi
+### 7.2 BQ2: Effect of ranking on transaction likelihood
 
-NDCG@5 model = **0,5761** vs NDCG@5 popularity = **0,0173** di validation set. Urutan hasil model menaruh merchant yang benar-benar ditransaksikan user jauh lebih dekat ke posisi atas (rank 1–5) dibanding urutan berbasis popularitas : user lebih cepat melihat merchant yang relevan buat mereka.
+Model NDCG@5 = **0.5761** vs. popularity NDCG@5 = **0.0173** on the validation set. The model's ordering places merchants the user actually transacted with much closer to the top (ranks 1–5) than popularity-based ordering does, users see relevant merchants for them much sooner.
 
-Tiga contoh user dari validation set (dipilih acak sebagai ilustrasi kualitatif, bukan dasar kesimpulan utama  kesimpulan BQ2 memakai rata-rata di atas):
+Three example users from the validation set (chosen at random for illustration, not as the basis for the main conclusion, BQ2's conclusion uses the averages above):
 
-| User | NDCG@5 Model | NDCG@5 Popularity | Verdict |
+| User | Model NDCG@5 | Popularity NDCG@5 | Verdict |
 |---|---|---|---|
-| `1Z5m2Pzw...` | 0,441 | 0,000 | Model lebih baik |
-| `52nYCf9C...` | 0,000 | 0,000 | Sama : keduanya tidak menaikkan item relevan |
-| `Zo3K-CTw...` | 0,830 | 0,000 | Model lebih baik |
+| `1Z5m2Pzw...` | 0.441 | 0.000 | Model wins |
+| `52nYCf9C...` | 0.000 | 0.000 | Tied, neither surfaces a relevant item |
+| `Zo3K-CTw...` | 0.830 | 0.000 | Model wins |
 
-### 7.3 BQ3 : Fitur paling berpengaruh
+### 7.3 BQ3: Most influential features
 
 ![Feature Importance](assets/bq3_feature_importance.png)
 
-Tiga fitur teratas: `item_popularity` (474), `als_score` (468), `cat_similarity` (206), diikuti `item_avg_rating` (~190) dan `in_als_topk` (~70). Empat fitur lain : `inter_rating`, `user_review_count`, `user_avg_rating`, `inter_recency` : importance-nya mendekati nol. Cuma 5 dari 9 fitur yang benar-benar dipakai model.
+The top three features: `item_popularity` (474), `als_score` (468), `cat_similarity` (206), followed by `item_avg_rating` (~190) and `in_als_topk` (~70). The other four features, `inter_rating`, `user_review_count`, `user_avg_rating`, `inter_recency`, have importance close to zero. Only 5 of the 9 features are actually being used by the model.
 
-Model paling mengandalkan karakteristik merchant (popularitas, rating) dan sinyal kolaboratif ALS (preferensi historis user), bukan fitur level-user (rata-rata rating user, jumlah review user) atau recency. Ini perlu diperhatikan kalau target berikutnya adalah memperbaiki rekomendasi untuk user yang jarang bertransaksi : fitur yang mestinya membantu kasus itu justru kurang termanfaatkan model saat ini.
+The model relies mostly on merchant characteristics (popularity, rating) and the ALS collaborative signal (the user's historical preferences), not on user-level features (average user rating, user review count) or recency. This matters if the next goal is improving recommendations for infrequent transactors, the features that should help with that case are currently underused by the model.
 
-### 7.4 BQ4 : Peningkatan relevansi vs baseline
+### 7.4 BQ4: Relevance lift vs. baseline
 
-| Metrik | Model (ALS+Ranker) | Popularity Baseline | ALS Score Baseline |
+| Metric | Model (ALS+Ranker) | Popularity Baseline | ALS Score Baseline |
 |---|---|---|---|
-| Recall@5 | 0,4532 | 0,0127 | 0,0272 |
-| NDCG@5 | 0,5761 | 0,0173 | 0,0397 |
-| Recall@10 | 0,5846 | 0,0215 | 0,0438 |
-| NDCG@10 | 0,5948 | 0,0199 | 0,0434 |
+| Recall@5 | 0.4532 | 0.0127 | 0.0272 |
+| NDCG@5 | 0.5761 | 0.0173 | 0.0397 |
+| Recall@10 | 0.5846 | 0.0215 | 0.0438 |
+| NDCG@10 | 0.5948 | 0.0199 | 0.0434 |
 
-![Perbandingan Recall & NDCG: Model vs Baseline](assets/bq4_model_vs_baseline.png)
+![Recall & NDCG Comparison: Model vs. Baseline](assets/bq4_model_vs_baseline.png)
 
-Di validation set, model naik **~3.470%** di Recall@5 dan **~3.229%** di NDCG@5 dibanding baseline popularitas. Angka persentase sebesar ini wajar secara matematis karena baseline-nya sangat kecil (Recall@5 popularitas cuma 0,0127)  bukan tanda ada yang salah, tapi juga berarti persentase ini belum disertai uji signifikansi statistik (lihat Batasan poin 3). Uplift besar ini masuk akal secara bisnis: baseline popularitas menyodorkan daftar merchant generik yang sama untuk semua user, padahal preferensi tiap user di dataset ini sangat spesifik dan beragam, jadi baseline itu memang sulit menebak merchant yang relevan buat individu tertentu.
+On the validation set, the model gains **~3,470%** in Recall@5 and **~3,229%** in NDCG@5 over the popularity baseline. A percentage this large is mathematically expected because the baseline itself is very small (popularity Recall@5 is just 0.0127), that isn't a sign of an error, but it also means this percentage hasn't yet been backed by a statistical significance test (see Limitation #3). This large uplift makes business sense too: the popularity baseline offers the same generic merchant list to every user, while user preferences in this dataset are highly specific and varied, so that baseline was always going to struggle to guess the right merchant for any given individual.
 
-ALS Score Baseline (skor mentah ALS tanpa ranker) juga jauh di bawah model penuh : tanda bahwa lapisan ranking (LightGBM) memberi nilai tambah signifikan di atas candidate generation saja.
+The ALS Score Baseline (raw ALS score without the ranker) also falls well short of the full model, a sign that the ranking layer (LightGBM) adds significant value on top of candidate generation alone.
 
-## 8. Rekomendasi
+## 8. Recommendations
 
-1. Investigasi ulang fitur level-user (`user_review_count`, `user_avg_rating`, `inter_recency`) lewat rekayasa ulang seperti normalisasi atau binning, supaya lebih bisa ditangkap tree-based model.
-2. Tambahkan uji signifikansi statistik (misalnya bootstrap confidence interval) atas selisih metrik model vs baseline, untuk memperkuat klaim uplift  terutama sebelum angka seperti "+3.470%" dikutip di luar konteks laporan ini.
-3. Cek ulang cakupan kota: filter otomatis menghasilkan Philadelphia dan Tucson. Kalau target proyek memang untuk kota tertentu, pastikan kota itu memang tidak ada di versi dataset ini.
+1. Re-investigate the user-level features (`user_review_count`, `user_avg_rating`, `inter_recency`) through re-engineering, such as normalization or binning, so the tree-based model can pick up on them better.
+2. Add a statistical significance test (for example, a bootstrap confidence interval) on the gap between model and baseline metrics, to strengthen the uplift claim, especially before a number like "+3,470%" gets quoted outside the context of this report.
+3. Double-check city coverage: the automatic filter produced Philadelphia and Tucson. If the project's actual target is a specific city, confirm that city genuinely isn't present in this version of the dataset.
 
-## 9. Batasan & Keterbatasan Proyek
+## 9. Limitations & Constraints
 
-1. Filter kota otomatis (top-2 berdasarkan jumlah bisnis) menghasilkan Philadelphia dan Tucson, bukan kota yang dipilih manual.
-2. Cuma 5 dari 9 fitur yang benar-benar berkontribusi ke model (lihat BQ3); fitur level-user hampir tidak terpakai.
-3. Belum ada uji signifikansi statistik atas selisih metrik model vs baseline  persentase uplift di BQ4 (mis. +3.470%) besar secara relatif karena baseline-nya kecil, dan belum ada interval kepercayaan di baliknya.
+1. The automatic city filter (top 2 by business count) produced Philadelphia and Tucson, not a manually chosen city.
+2. Only 5 of the 9 features actually contribute to the model (see BQ3); user-level features are barely used.
+3. There's no statistical significance test yet on the gap between model and baseline metrics, the uplift percentages in BQ4 (e.g. +3,470%) look large in relative terms because the baseline is small, and there's no confidence interval behind them yet.
 
-## 10. Cara Menjalankan
+## 10. How to Run
 
 ```bash
 pip install pandas numpy scipy scikit-learn implicit lightgbm tqdm matplotlib seaborn --break-system-packages
 ```
 
-1. Unduh dataset dari [Yelp Open Dataset](https://www.yelp.com/dataset/download) dan letakkan di folder `./data/`.
-2. Buka `rekomendasi_merchant.ipynb`.
-3. Jalankan seluruh cell dari atas ke bawah (Run All). Waktu proses candidate generation + feature building bisa memakan >1 jam tergantung spesifikasi mesin : pantau progress bar `tqdm` di tiap tahap.
+1. Download the dataset from the [Yelp Open Dataset](https://www.yelp.com/dataset/download) and place it in the `./data/` folder.
+2. Open `rekomendasi_merchant.ipynb`.
+3. Run all cells from top to bottom (Run All). Candidate generation + feature building can take over an hour depending on machine specs, watch the `tqdm` progress bar at each stage.
 
-## 11. Struktur Proyek
+## 11. Project Structure
 
 ```
-rekomendasi_merchant.ipynb   -> notebook utama: candidate generation (ALS), ranking (LightGBM LambdaRank), evaluasi BQ1-BQ4
-assets/                      -> chart hasil evaluasi untuk README
-data/                        -> file dataset Yelp (tidak disertakan di repo)
+rekomendasi_merchant.ipynb   -> main notebook: candidate generation (ALS), ranking (LightGBM LambdaRank), BQ1-BQ4 evaluation
+assets/                      -> evaluation charts for the README
+data/                        -> Yelp dataset files (not included in the repo)
 ```
 
-## 12. Pengembangan Lanjutan
+## 12. Future Work
 
-1. Cross-check hasil dengan cutoff waktu berbeda (sensitivity check terhadap `TRAIN_CUTOFF`).
-2. Tambahkan analisis segmentasi user (aktif vs jarang bertransaksi), untuk melihat apakah keunggulan model konsisten di semua segmen : terutama karena temuan BQ3 mengindikasikan model mungkin kurang optimal untuk user dengan histori tipis.
+1. Cross-check results with different time cutoffs (sensitivity check against `TRAIN_CUTOFF`).
+2. Add user segmentation analysis (active vs. infrequent transactors), to see whether the model's edge holds across all segments, especially since the BQ3 finding suggests the model may be less optimal for users with thin history.
 
-## 13. Referensi
+## 13. References
 
 Jaiswal, A. K. (2024). *Towards a theoretical understanding of two-stage recommender systems* (arXiv:2403.00802). arXiv. https://arxiv.org/abs/2403.00802
 
